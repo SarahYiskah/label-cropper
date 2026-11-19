@@ -96,6 +96,7 @@ select{flex:1}
       <span class="pager" id="pager">Page 1 / 1</span>
       <button class="btn" id="nextPage" aria-label="Next page">›</button>
     </div>
+    <p class="small" id="tallHint" hidden>Long page: scroll to your label and tap it to move the box there, then adjust the corners.</p>
     <div class="drop" id="drop">
       <div><strong>Drop a label PDF or screenshot here</strong>or tap to choose a PDF, screenshot or photo</div>
     </div>
@@ -185,6 +186,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem('labelcrop.'+k, JSON.stringify(v)) }catch(e){} }
 };
 
+let tall = false, lastW = 0;
 let pdf = null, img = null, pageNum = 1, page = null, pageW = 0, pageH = 0, vs = 1; // vs = view px per unit (PDF point, or image pixel)
 const numPages = () => img ? 1 : pdf.numPages;
 let crop = null; // {x,y,w,h} in PDF points (top-left origin)
@@ -261,6 +263,7 @@ async function loadFile(f){
   $('drop').hidden = true; $('viewport').hidden = false; $('toolbar').hidden = false;
   crop = null; await showPage(1);
   autoDetect();
+  if (tall) requestAnimationFrame(() => $('crop').scrollIntoView({block: 'center'}));
 }
 function alertBox(msg){ $('drop').hidden = false; $('drop').querySelector('div').innerHTML = '<strong>Hmm.</strong>' + msg }
 
@@ -270,7 +273,13 @@ async function showPage(n){
   else { page = await pdf.getPage(n); const v1 = page.getViewport({scale: 1}); pageW = v1.width; pageH = v1.height }
   const box = $('viewport'), availW = box.clientWidth - 40, availH = Math.max(window.innerHeight - 220, 360);
   vs = Math.min(availW / pageW, availH / pageH);
-  const dpr = window.devicePixelRatio || 1, cv = $('view');
+  // long pages (long emails, receipts): fit the width and let the page scroll, so the label is big enough to crop
+  tall = pageW * vs < availW * 0.6;
+  if (tall) vs = availW / pageW;
+  $('tallHint').hidden = !tall; $('wrap').style.touchAction = tall ? 'pan-y' : 'none';
+  lastW = box.clientWidth;
+  // phones cap canvas size: keep the on-screen render under ~12M pixels
+  const dpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(12e6 / (pageW * vs * pageH * vs))), cv = $('view');
   cv.style.width = (pageW * vs) + 'px'; cv.style.height = (pageH * vs) + 'px';
   if (img){
     cv.width = Math.max(1, Math.floor(pageW * vs * dpr)); cv.height = Math.max(1, Math.floor(pageH * vs * dpr));
@@ -287,21 +296,25 @@ async function showPage(n){
 }
 
 // ---------- auto detect ----------
-function autoDetect(){
-  const cv = $('view'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
-  const d = ctx.getImageData(0, 0, W, H).data;
+function autoDetect(area){
+  // area (page units, optional): only look inside this part of the page
+  const cv = $('view'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height, s = W / pageW;
+  const ax = area ? Math.max(0, Math.floor(area.x*s)) : 0, ay = area ? Math.max(0, Math.floor(area.y*s)) : 0;
+  const aw = area ? Math.min(W - ax, Math.ceil(area.w*s)) : W, ah = area ? Math.min(H - ay, Math.ceil(area.h*s)) : H;
+  const d = ctx.getImageData(ax, ay, aw, ah).data;
   let x0 = W, y0 = H, x1 = -1, y1 = -1;
-  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2){
-    const i = (y*W + x)*4;
+  for (let y = 0; y < ah; y += 2) for (let x = 0; x < aw; x += 2){
+    const i = (y*aw + x)*4;
     if (d[i+3] > 0 && d[i] + d[i+1] + d[i+2] < 600){ if (x<x0)x0=x; if (x>x1)x1=x; if (y<y0)y0=y; if (y>y1)y1=y; }
   }
-  if (x1 < 0){ crop = {x:0, y:0, w:pageW, h:pageH} }
+  if (x1 < 0){ if (area) return false; crop = {x:0, y:0, w:pageW, h:pageH} }
   else {
     const k = pageW / W, pad = 6;
-    crop = clampBox({x: x0*k - pad, y: y0*k - pad, w: (x1-x0)*k + pad*2, h: (y1-y0)*k + pad*2});
+    crop = clampBox({x: (x0+ax)*k - pad, y: (y0+ay)*k - pad, w: (x1-x0)*k + pad*2, h: (y1-y0)*k + pad*2});
   }
   if (settings.lock) crop = fitAspect(crop, cropAspect(crop.w > crop.h), true);
   drawCrop();
+  return true;
 }
 
 // ---------- crop box UI ----------
@@ -317,13 +330,16 @@ $('wrap').addEventListener('pointerdown', e => {
   if (!page) return;
   const r = $('wrap').getBoundingClientRect(), px = (e.clientX - r.left)/vs, py = (e.clientY - r.top)/vs;
   const h = e.target.dataset.h;
+  if (tall && e.pointerType !== 'mouse' && !h && e.target !== $('crop')){
+    drag = {mode: 'tap', px, py, cx: e.clientX, cy: e.clientY}; return; // let the finger scroll
+  }
   if (h) drag = {mode:'resize', h, start: {...crop}, px, py};
   else if (e.target === $('crop')) drag = {mode:'move', start: {...crop}, px, py};
   else { drag = {mode:'new', px, py}; crop = {x:px, y:py, w:1, h:1} }
   $('wrap').setPointerCapture(e.pointerId); e.preventDefault();
 });
 $('wrap').addEventListener('pointermove', e => {
-  if (!drag) return;
+  if (!drag || drag.mode === 'tap') return;
   const r = $('wrap').getBoundingClientRect();
   const px = Math.max(0, Math.min(pageW, (e.clientX - r.left)/vs)), py = Math.max(0, Math.min(pageH, (e.clientY - r.top)/vs));
   const s = drag.start;
@@ -347,7 +363,17 @@ $('wrap').addEventListener('pointermove', e => {
   }
   drawCrop();
 });
-const endDrag = () => { if (drag && crop && (crop.w < 8 || crop.h < 8)) autoDetect(); drag = null };
+const endDrag = e => {
+  if (drag && drag.mode === 'tap'){
+    // a tap (not a scroll) centres the box on that spot
+    if (e.type === 'pointerup' && crop && Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy) < 10){
+      // snap to what's printed in a label-sized area around the tap; else just move the box there
+      const h = pageW * 1.5, area = {x: 0, y: drag.py - h/2, w: pageW, h};
+      if (!autoDetect(area)){ crop = clampBox({x: drag.px - crop.w/2, y: drag.py - crop.h/2, w: crop.w, h: crop.h}); drawCrop() }
+    }
+  } else if (drag && crop && (crop.w < 8 || crop.h < 8)) autoDetect();
+  drag = null;
+};
 $('wrap').addEventListener('pointerup', endDrag);
 $('wrap').addEventListener('pointercancel', endDrag);
 
@@ -510,7 +536,7 @@ for (const id of ['size','cw','ch','rot','margin','bw','lock']) $(id).addEventLi
   drawCrop();
 });
 addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'p' && crop){ e.preventDefault(); doPrint() } });
-let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => page && showPage(pageNum), 150) });
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => page && $('viewport').clientWidth !== lastW && showPage(pageNum), 150) });
 update();
 }
 </script>
