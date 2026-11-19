@@ -16,9 +16,9 @@
     "action": "./share",
     "method": "POST",
     "enctype": "multipart/form-data",
-    "params": { "files": [{ "name": "file", "accept": ["application/pdf", ".pdf"] }] }
+    "params": { "files": [{ "name": "file", "accept": ["application/pdf", ".pdf", "image/*", ".png", ".jpg", ".jpeg", ".heic"] }] }
   },
   "file_handlers": [
-    { "action": "./", "accept": { "application/pdf": [".pdf"] } }
+    { "action": "./", "accept": { "application/pdf": [".pdf"], "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/heic": [".heic"], "image/webp": [".webp"] } }
   ]
 }

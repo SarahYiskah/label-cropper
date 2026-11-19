@@ -18,7 +18,7 @@ There is no build step. Host the files in this folder as they are.
 
 ## Use
 
-1. Open a PDF. On Android you can also share a PDF from Gmail or Files straight to "Label Cropper".
+1. Open a PDF, or a screenshot or photo of the label (handy when the PDF is a long page and hard to crop). On Android you can also share a PDF or image from Gmail or Files straight to "Label Cropper".
 2. Adjust the box. It starts around the content and keeps your label's shape.
 3. Tap **Print label**. If you print from a phone and the job doesn't reach the printer, tap **Share / save as PDF** and send the file to the printer's own app. The PDF is already the exact label size.
 4. Save the box position as a preset per company (Amazon, UPS…) so the next label takes one tap.

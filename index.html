@@ -19,6 +19,7 @@
 <style>
 :root{--bg:#f4f5f3;--card:#fff;--ink:#111;--muted:#666;--line:#ddd;--accent:#00a86b;--accent-ink:#fff;color-scheme:light}
 *{box-sizing:border-box;min-width:0}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Schibsted Grotesk",system-ui,sans-serif}
 header{display:flex;align-items:center;gap:14px;padding:12px 20px;padding-top:max(12px,env(safe-area-inset-top));padding-left:max(20px,env(safe-area-inset-left));padding-right:max(20px,env(safe-area-inset-right));background:var(--ink);color:#fff;flex-wrap:wrap}
 @media(max-width:600px){header .hint{display:none}header h1{flex:1}main{padding:12px;gap:12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}.stage{padding:10px;min-height:0}}
@@ -80,9 +81,9 @@ select{flex:1}
 <body>
 <header>
   <h1>Label Cropper</h1>
-  <span class="hint">Open a return-label PDF → drag a box around the label → Print.</span>
-  <button class="btn" id="openBtn">Open PDF…</button>
-  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+  <span class="hint">Open a return-label PDF or screenshot → drag a box around the label → Print.</span>
+  <button class="btn" id="openBtn">Open PDF / image…</button>
+  <input type="file" id="file" accept="application/pdf,.pdf,image/*" hidden>
 </header>
 
 <main>
@@ -96,7 +97,7 @@ select{flex:1}
       <button class="btn" id="nextPage" aria-label="Next page">›</button>
     </div>
     <div class="drop" id="drop">
-      <div><strong>Drop a label PDF here</strong>or click to choose a file</div>
+      <div><strong>Drop a label PDF or screenshot here</strong>or tap to choose a PDF, screenshot or photo</div>
     </div>
     <div class="viewport" id="viewport" hidden>
       <div class="pagewrap" id="wrap">
@@ -184,7 +185,8 @@ const store = {
   set(k, v){ try{ localStorage.setItem('labelcrop.'+k, JSON.stringify(v)) }catch(e){} }
 };
 
-let pdf = null, pageNum = 1, page = null, pageW = 0, pageH = 0, vs = 1; // vs = view px per PDF point
+let pdf = null, img = null, pageNum = 1, page = null, pageW = 0, pageH = 0, vs = 1; // vs = view px per unit (PDF point, or image pixel)
+const numPages = () => img ? 1 : pdf.numPages;
 let crop = null; // {x,y,w,h} in PDF points (top-left origin)
 let presets = store.get('presets', []);
 
@@ -236,12 +238,26 @@ function clampBox(c){
 }
 
 // ---------- loading ----------
+function loadImage(f){
+  return new Promise((res, rej) => {
+    const im = new Image(), url = URL.createObjectURL(f);
+    im.onload = () => { URL.revokeObjectURL(url); res(im) };
+    im.onerror = () => { URL.revokeObjectURL(url); rej() };
+    im.src = url;
+  });
+}
 async function loadFile(f){
   if (!f) return;
-  if (!lib){ alertBox('Could not load the PDF reader. Check your internet connection and reload.'); return }
-  const buf = await f.arrayBuffer();
-  try { pdf = await lib.getDocument({data: buf}).promise }
-  catch(e){ alertBox('That file could not be opened as a PDF.'); return }
+  const isImage = /^image\//.test(f.type) || /\.(png|jpe?g|heic|heif|webp|gif)$/i.test(f.name || '');
+  if (isImage){
+    try { img = await loadImage(f); pdf = null; page = img }
+    catch(e){ alertBox('That image could not be opened. Try a PNG or JPEG screenshot.'); return }
+  } else {
+    if (!lib){ alertBox('Could not load the PDF reader. Check your internet connection and reload.'); return }
+    const buf = await f.arrayBuffer();
+    try { pdf = await lib.getDocument({data: buf}).promise; img = null }
+    catch(e){ alertBox('That file could not be opened as a PDF or image.'); return }
+  }
   $('drop').hidden = true; $('viewport').hidden = false; $('toolbar').hidden = false;
   crop = null; await showPage(1);
   autoDetect();
@@ -249,16 +265,23 @@ async function loadFile(f){
 function alertBox(msg){ $('drop').hidden = false; $('drop').querySelector('div').innerHTML = '<strong>Hmm.</strong>' + msg }
 
 async function showPage(n){
-  pageNum = n; page = await pdf.getPage(n);
-  const v1 = page.getViewport({scale: 1}); pageW = v1.width; pageH = v1.height;
+  pageNum = n;
+  if (img){ page = img; pageW = img.naturalWidth; pageH = img.naturalHeight }
+  else { page = await pdf.getPage(n); const v1 = page.getViewport({scale: 1}); pageW = v1.width; pageH = v1.height }
   const box = $('viewport'), availW = box.clientWidth - 40, availH = Math.max(window.innerHeight - 220, 360);
   vs = Math.min(availW / pageW, availH / pageH);
-  const dpr = window.devicePixelRatio || 1, v = page.getViewport({scale: vs * dpr}), cv = $('view');
-  cv.width = Math.floor(v.width); cv.height = Math.floor(v.height);
+  const dpr = window.devicePixelRatio || 1, cv = $('view');
   cv.style.width = (pageW * vs) + 'px'; cv.style.height = (pageH * vs) + 'px';
-  await page.render({canvasContext: cv.getContext('2d'), viewport: v}).promise;
-  $('pager').textContent = `Page ${n} / ${pdf.numPages}`;
-  $('prevPage').disabled = n <= 1; $('nextPage').disabled = n >= pdf.numPages;
+  if (img){
+    cv.width = Math.max(1, Math.floor(pageW * vs * dpr)); cv.height = Math.max(1, Math.floor(pageH * vs * dpr));
+    const ctx = cv.getContext('2d'); ctx.imageSmoothingQuality = 'high'; ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  } else {
+    const v = page.getViewport({scale: vs * dpr});
+    cv.width = Math.floor(v.width); cv.height = Math.floor(v.height);
+    await page.render({canvasContext: cv.getContext('2d'), viewport: v}).promise;
+  }
+  $('pager').textContent = `Page ${n} / ${numPages()}`;
+  $('prevPage').disabled = n <= 1; $('nextPage').disabled = n >= numPages();
   if (crop) clampBox(crop);
   drawCrop();
 }
@@ -329,8 +352,8 @@ $('wrap').addEventListener('pointerup', endDrag);
 $('wrap').addEventListener('pointercancel', endDrag);
 
 // ---------- output ----------
-function renderLabel(src, srcScale, dpi){
-  // src: canvas of the whole page at srcScale px per point
+function renderLabel(src, srcScale, dpi, ox = 0, oy = 0){
+  // src: image of the page at srcScale px per unit, whose top-left is page point (ox, oy)
   const [lw, lh] = labelIn(), W = Math.round(lw*dpi), H = Math.round(lh*dpi), m = settings.margin*dpi;
   const out = document.createElement('canvas'); out.width = W; out.height = H;
   const ctx = out.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
@@ -338,7 +361,7 @@ function renderLabel(src, srcScale, dpi){
   const f = Math.min((W - 2*m)/sw, (H - 2*m)/sh);
   ctx.save(); ctx.translate(W/2, H/2); ctx.rotate(rot*Math.PI/180);
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(src, crop.x*srcScale, crop.y*srcScale, crop.w*srcScale, crop.h*srcScale,
+  ctx.drawImage(src, (crop.x-ox)*srcScale, (crop.y-oy)*srcScale, crop.w*srcScale, crop.h*srcScale,
     -crop.w*f/2, -crop.h*f/2, crop.w*f, crop.h*f);
   ctx.restore();
   if (settings.bw){
@@ -361,13 +384,16 @@ function update(){
 async function buildHiRes(){
   const dpi = 300, [lw, lh] = labelIn(), rot = rotation();
   const sw = rot % 180 ? crop.h : crop.w, sh = rot % 180 ? crop.w : crop.h;
-  // phones cap canvas size, so keep the full-page render under ~16M pixels
+  // a screenshot or photo: crop straight from the original pixels
+  if (img) return renderLabel(img, 1, dpi).out;
+  // PDF: render only the crop box (not the whole page), so long pages stay sharp.
+  // phones cap canvas size, so keep that render under ~16M pixels
   let f = Math.min(8, Math.min((lw - 2*settings.margin)*dpi/sw, (lh - 2*settings.margin)*dpi/sh));
-  f = Math.min(f, Math.sqrt(16e6 / (pageW * pageH)));
-  const v = page.getViewport({scale: f}), cv = document.createElement('canvas');
-  cv.width = Math.ceil(v.width); cv.height = Math.ceil(v.height);
+  f = Math.min(f, Math.sqrt(16e6 / (crop.w * crop.h)));
+  const v = page.getViewport({scale: f, offsetX: -crop.x*f, offsetY: -crop.y*f}), cv = document.createElement('canvas');
+  cv.width = Math.ceil(crop.w*f); cv.height = Math.ceil(crop.h*f);
   await page.render({canvasContext: cv.getContext('2d'), viewport: v}).promise;
-  const {out} = renderLabel(cv, f, dpi);
+  const {out} = renderLabel(cv, f, dpi, crop.x, crop.y);
   cv.width = cv.height = 0;
   return out;
 }
@@ -439,7 +465,7 @@ function applyPreset(){
   $('rot').value = settings.rot; $('margin').value = settings.margin; $('bw').checked = settings.bw; $('lock').checked = settings.lock;
   readSettings();
   const go = () => { crop = clampBox({x: p.fx*pageW, y: p.fy*pageH, w: p.fw*pageW, h: p.fh*pageH}); drawCrop() };
-  if (p.page && p.page !== pageNum && pdf && p.page <= pdf.numPages) showPage(p.page).then(go); else go();
+  if (p.page && p.page !== pageNum && pdf && p.page <= numPages()) showPage(p.page).then(go); else go();
 }
 $('savePreset').onclick = () => {
   const name = $('presetName').value.trim() || ('Crop ' + (presets.length + 1));
@@ -463,11 +489,11 @@ addEventListener('drop', e => { e.preventDefault(); document.body.classList.remo
 $('autoBtn').onclick = autoDetect;
 $('fullBtn').onclick = () => { crop = {x:0, y:0, w:pageW, h:pageH}; if (settings.lock) crop = fitAspect(crop, cropAspect(pageW > pageH), false); drawCrop() };
 $('prevPage').onclick = () => pageNum > 1 && showPage(pageNum - 1);
-$('nextPage').onclick = () => pageNum < pdf.numPages && showPage(pageNum + 1);
+$('nextPage').onclick = () => pageNum < numPages() && showPage(pageNum + 1);
 $('printBtn').onclick = doPrint;
 $('shareBtn').onclick = doShare;
 
-// PDF shared into the app (Android share sheet) or opened with it (desktop)
+// PDF or image shared into the app (Android share sheet) or opened with it (desktop)
 if (location.search.includes('shared') && 'caches' in window) (async () => {
   try {
     const c = await caches.open('labelcrop-share'), key = new URL('shared-pdf', document.baseURI).href;

@@ -14,7 +14,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request, url = new URL(req.url);
 
-  // Android "Share to Label Cropper": stash the PDF, then open the app
+  // Android "Share to Label Cropper": stash the PDF or image, then open the app
   if (req.method === 'POST' && url.pathname.endsWith('/share')) {
     e.respondWith((async () => {
       const form = await req.formData();
@@ -22,7 +22,7 @@ self.addEventListener('fetch', e => {
       if (file) {
         const c = await caches.open(SHARE);
         await c.put(new URL('shared-pdf', self.registration.scope).href,
-          new Response(file, { headers: { 'content-type': 'application/pdf' } }));
+          new Response(file, { headers: { 'content-type': file.type || 'application/pdf' } }));
       }
       return Response.redirect(new URL('./?shared=1', self.registration.scope).href, 303);
     })());
